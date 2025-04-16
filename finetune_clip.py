@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import CLIPModel, CLIPProcessor
 import matplotlib.pyplot as plt
 import numpy as np
+from tqdm import tqdm 
 
 device = "mps"  
 
@@ -17,12 +18,13 @@ processor = CLIPProcessor.from_pretrained(model_name)
 print("CLIP model loaded successfully!")
 
 AUGMENTATIONS = [
+    lambda img: img.convert("RGB").save("temp.jpg", "JPEG", quality=random.randint(50, 100)) or Image.open("temp.jpg"),
     transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-    transforms.RandomHorizontalFlip(p=1.0),
-    transforms.RandomVerticalFlip(p=1.0),
-    transforms.RandomRotation(degrees=(-10, 10)),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomVerticalFlip(p=0.5),
+    transforms.RandomRotation(degrees=(-10, 10))
 ]
+
 class SyntheticDataset(Dataset):
     def __init__(self, root_dir, processor=None, apply_augmentation=True):
         self.image_paths = []
@@ -80,177 +82,98 @@ class SyntheticDataset(Dataset):
             return pixel_values, label, image_path  
         
         return image, label, image_path
-    
-def collate_fn(batch):
-    pixel_values = torch.stack([item[0] for item in batch])
-    labels = torch.tensor([item[1] for item in batch])
-    paths = [item[2] for item in batch]
-    return pixel_values, labels, paths
 
 class CLIPClassifier(torch.nn.Module):
     def __init__(self, clip_model):
         super(CLIPClassifier, self).__init__()
         self.clip_model = clip_model
-        self.fc = torch.nn.Linear(768, 2)  # real or fake
-
+        self.fc = torch.nn.Linear(768, 2)  # Binary classification (real/fake)
+    
     def forward(self, pixel_values):
-        with torch.no_grad():  
-            # Extract vision features only
+        with torch.no_grad():
             vision_outputs = self.clip_model.vision_model(pixel_values)
             image_features = vision_outputs.pooler_output
         return self.fc(image_features)
 
-def train(model, dataloader, epochs=5):
+def evaluate(model, dataloader):
+    model.eval()
+    total_loss = 0
+    correct = 0
+    total = 0
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    with torch.no_grad():
+        for images, labels, _ in dataloader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
+            
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    
+    return total_loss / len(dataloader), 100 * correct / total
+def train(model, train_dataloader, val_dataloader, epochs=5, patience=3):
     model.train()
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.fc.parameters(), lr=1e-4)  
     
-    history = {
-        'loss': [],
-        'accuracy': []
-    }
-
+    best_val_loss = float('inf')
+    patience_counter = 0
+    
     for epoch in range(epochs):
         total_loss = 0
         correct = 0
         total = 0
         
-        for batch_idx, (images, labels, _) in enumerate(dataloader):
-            images, labels = images.to(device), labels.to(device)
-
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-            total_loss += loss.item()
-            
-            if (batch_idx + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{epochs}, Batch {batch_idx+1}/{len(dataloader)}, Loss: {loss.item():.4f}")
+        with tqdm(total=len(train_dataloader), desc=f"Epoch {epoch+1}/{epochs}") as pbar:
+            for images, labels, _ in train_dataloader:
+                images, labels = images.to(device), labels.to(device)
+                
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+                total_loss += loss.item()
+                
+                pbar.update(1)
+                pbar.set_postfix(loss=loss.item())
         
-        epoch_loss = total_loss/len(dataloader)
-        epoch_accuracy = 100 * correct / total
+        train_loss = total_loss / len(train_dataloader)
+        train_accuracy = 100 * correct / total
+        val_loss, val_accuracy = evaluate(model, val_dataloader)
         
-        history['loss'].append(epoch_loss)
-        history['accuracy'].append(epoch_accuracy)
+        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.2f}%, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.2f}%")
         
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.2f}%")
-    
-    return history
-
-def test_model(model, test_loader):
-    model.eval()
-    results = []
-    
-    with torch.no_grad():
-        for images, labels, paths in test_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            probabilities = torch.nn.functional.softmax(outputs, dim=1)
-            predictions = torch.argmax(probabilities, dim=1)
-            
-            for i in range(len(labels)):
-                results.append({
-                    'path': paths[i],
-                    'true_label': labels[i].item(),
-                    'predicted': predictions[i].item(),
-                    'confidence': probabilities[i][predictions[i]].item(),
-                    'real_prob': probabilities[i][0].item(),
-                    'fake_prob': probabilities[i][1].item()
-                })
-    
-    return results
-
-def plot_training_history(history):
-    plt.figure(figsize=(12, 5))
-    
-    plt.subplot(1, 2, 1)
-    plt.plot(history['loss'])
-    plt.title('Training Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(history['accuracy'])
-    plt.title('Training Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy (%)')
-    
-    plt.tight_layout()
-    plt.savefig('training_history.png')
-    print("Training history plot saved to 'training_history.png'")
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), "best_model.pth")
+            print("New best model saved!")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered. Stopping training.")
+                break
 
 def main():
-    print("Starting DeepFake detection program...")
+    train_dataset = SyntheticDataset("data/train/train_set_1", processor=processor)
+    val_dataset = SyntheticDataset("data/val/val_set_1", processor=processor)
     
-    train_root = os.path.join("data", "train", "train_set_1")
-    if not os.path.exists(train_root):
-        print(f"Error: Data directory not found: {train_root}")
-        print("Current working directory:", os.getcwd())
-        print("Available directories:", os.listdir())
-        return
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
     
-    print(f"Data directory found: {train_root}")
+    base_model = CLIPModel.from_pretrained(model_name).to(device)
+    model = CLIPClassifier(base_model).to(device)
     
-    train_dataset = SyntheticDataset(train_root, processor=processor)
-    
-    if len(train_dataset) == 0:
-        print("No images found in the dataset. Exiting.")
-        return
-        
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=16, 
-        shuffle=True,
-        collate_fn=collate_fn
-    )
-
-    print("Creating CLIP classifier model...")
-    model = CLIPClassifier(clip_model).to(device)
-    print("Model created successfully!")
-
-    model_path = "clip_deepfake_detector.pth"
-    if os.path.exists(model_path):
-        print(f"Loading pre-trained model from {model_path}")
-        model.load_state_dict(torch.load(model_path))
-    else:
-        print("Starting training...")
-        history = train(model, train_loader, epochs=10)
-        
-        plot_training_history(history)
-        
-        torch.save(model.state_dict(), model_path)
-        print(f"Model saved to {model_path}")
-
-    print("Testing model on a few samples...")
-    test_loader = DataLoader(
-        train_dataset,
-        batch_size=4,
-        shuffle=True,
-        collate_fn=collate_fn
-    )
-    
-    results = test_model(model, test_loader)
-    
-    print("\nTest Results:")
-    print("-" * 80)
-    print(f"{'Image Path':<50} | {'True':<5} | {'Pred':<5} | {'Conf':<10} | {'Real%':<10} | {'Fake%':<10}")
-    print("-" * 80)
-    
-    for i, res in enumerate(results[:10]):  
-        path_short = os.path.basename(os.path.dirname(res['path'])) + "/" + os.path.basename(res['path'])
-        print(f"{path_short:<50} | {res['true_label']:<5} | {res['predicted']:<5} | {res['confidence']:.4f} | {res['real_prob']:.4f} | {res['fake_prob']:.4f}")
-    
-    correct = sum(1 for res in results if res['true_label'] == res['predicted'])
-    accuracy = correct / len(results) * 100
-    print("-" * 80)
-    print(f"Test accuracy: {accuracy:.2f}% ({correct}/{len(results)})")
-    
-    print("\nProgram completed successfully!")
+    train(model, train_loader, val_loader, epochs=10, patience=3)
+    print("Training completed!")
 
 if __name__ == "__main__":
     main()

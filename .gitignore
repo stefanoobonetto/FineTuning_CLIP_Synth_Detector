@@ -160,7 +160,10 @@ cython_debug/
 #.idea/
 
 data
-<<<<<<< HEAD
 first_weight_only_aug.pth
-=======
->>>>>>> 1d371b440a1ba45c80a70aa073295206352d511b
+Real
+Mochi
+LTXVideo
+Hunyuan
+.DS_Store
+CogVideo

@@ -3,3 +3,4 @@ torchvision
 open-clip-torch
 transformers 
 datasets 
+scikit-learn
