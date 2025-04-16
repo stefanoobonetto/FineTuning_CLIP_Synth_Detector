@@ -254,13 +254,13 @@ def main():
         real_data = []
         real_labels = []
         for vid in real_videos:
-            real_count = metrics['frame_predictions'].count(0)
-            fake_count = metrics['frame_predictions'].count(1)
+            real_count = sum(1 for frame in metrics['frame_predictions'].values() if frame['pred'] == 0 and frame['true'] == 0)
+            fake_count = sum(1 for frame in metrics['frame_predictions'].values() if frame['pred'] == 1 and frame['true'] == 0)
             total = real_count + fake_count
             real_pct = real_count / total * 100 if total > 0 else 0
             real_data.append(real_pct)
             real_labels.append(vid)
-        
+
         real_colors = ['green' if metrics['video_level_preds'][v] == 0 else 'red' for v in real_videos]
         ax1.bar(range(len(real_videos)), real_data, color=real_colors)
         ax1.set_xticks(range(len(real_videos)))
@@ -268,19 +268,19 @@ def main():
         ax1.set_ylabel('% Frames Classified as Real')
         ax1.set_title('Real Videos - Frame Classification Distribution')
         ax1.axhline(y=50, color='black', linestyle='-', alpha=0.3)  # 50% line
-    
+
     # Plot for fake videos
     if fake_videos:
         fake_data = []
         fake_labels = []
         for vid in fake_videos:
-            real_count = metrics['frame_predictions'].count(0)
-            fake_count = metrics['frame_predictions'].count(1)
+            real_count = sum(1 for frame in metrics['frame_predictions'].values() if frame['pred'] == 0 and frame['true'] == 1)
+            fake_count = sum(1 for frame in metrics['frame_predictions'].values() if frame['pred'] == 1 and frame['true'] == 1)
             total = real_count + fake_count
             fake_pct = fake_count / total * 100 if total > 0 else 0
             fake_data.append(fake_pct)
             fake_labels.append(vid)
-        
+
         fake_colors = ['green' if metrics['video_level_preds'][v] == 1 else 'red' for v in fake_videos]
         ax2.bar(range(len(fake_videos)), fake_data, color=fake_colors)
         ax2.set_xticks(range(len(fake_videos)))
@@ -288,10 +288,10 @@ def main():
         ax2.set_ylabel('% Frames Classified as Fake')
         ax2.set_title('Fake Videos - Frame Classification Distribution')
         ax2.axhline(y=50, color='black', linestyle='-', alpha=0.3)  # 50% line
-    
-    plt.tight_layout()
-    plt.savefig('video_classification_distribution.png')
-    plt.close()
+
+        plt.tight_layout()
+        plt.savefig('video_classification_distribution.png')
+        plt.close()
 
     print("\nResults and visualizations saved to disk.")
     print("- video_level_confusion_matrix.png: Confusion matrix for video-level classification")
