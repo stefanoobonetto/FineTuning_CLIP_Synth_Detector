@@ -9,21 +9,20 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import f1_score, precision_score, accuracy_score, confusion_matrix, classification_report
 
-device = "mps"  
+device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 
-# Load the model architecture
 print("Loading CLIP model architecture...")
 model_name = "openai/clip-vit-base-patch32"
 base_model = CLIPModel.from_pretrained(model_name).to(device)
 processor = CLIPProcessor.from_pretrained(model_name)
 
-# Define the dataset class for test data
 class TestDataset(Dataset):
     def __init__(self, root_dir, processor=None):
         self.image_paths = []
         self.labels = []
-        self.video_ids = []  # Track which video each frame belongs to
-        self.video_info = {}  # Store information about each video
+        self.video_ids = []  
+        self.video_info = {}  
         self.processor = processor
         
         self.scan_dataset(root_dir)
@@ -42,7 +41,6 @@ class TestDataset(Dataset):
                 if not os.path.isdir(video_path):
                     continue
 
-                # Store information about this video
                 self.video_info[video_folder] = {
                     'label': label,
                     'class': class_name,
@@ -78,12 +76,11 @@ class TestDataset(Dataset):
         
         return image, label, image_path, video_id
 
-# Define the classifier architecture
 class CLIPClassifier(torch.nn.Module):
     def __init__(self, clip_model):
         super(CLIPClassifier, self).__init__()
         self.clip_model = clip_model
-        self.fc = torch.nn.Linear(768, 2)  # Binary classification (real/fake)
+        self.fc = torch.nn.Linear(768, 2)  # (real/fake)
     
     def forward(self, pixel_values):
         with torch.no_grad():
@@ -94,10 +91,8 @@ class CLIPClassifier(torch.nn.Module):
 def test_model_video_level(model, test_loader, test_dataset):
     model.eval()
     
-    # Store predictions for each frame
     frame_predictions = {}
     
-    # Dictionary to store predictions for each video
     video_predictions = defaultdict(list)
     
     with torch.no_grad():
@@ -114,12 +109,11 @@ def test_model_video_level(model, test_loader, test_dataset):
                 }
                 video_predictions[vid].append(pred.item())
     
-    # Aggregate video-level predictions based on majority vote
     video_level_preds = {}
     video_level_true = {}
     
     for video_id, predictions in video_predictions.items():
-        # Count number of frames predicted as real (0) vs fake (1)
+
         real_count = predictions.count(0)
         fake_count = predictions.count(1)
         
@@ -127,18 +121,16 @@ def test_model_video_level(model, test_loader, test_dataset):
         video_level_preds[video_id] = 0 if real_count > fake_count else 1
         video_level_true[video_id] = test_dataset.video_info[video_id]['label']
     
-    # Create lists for metrics calculation
     true_labels = list(video_level_true.values())
     predicted_labels = list(video_level_preds.values())
     
-    # Calculate metrics
+
     accuracy = accuracy_score(true_labels, predicted_labels)
     precision = precision_score(true_labels, predicted_labels, average='weighted')
     f1 = f1_score(true_labels, predicted_labels, average='weighted')
     conf_matrix = confusion_matrix(true_labels, predicted_labels)
     class_report = classification_report(true_labels, predicted_labels, target_names=["Real", "Fake"])
     
-    # Find incorrectly classified videos
     incorrect_videos = []
     for video_id in video_level_preds:
         if video_level_preds[video_id] != video_level_true[video_id]:
@@ -152,7 +144,6 @@ def test_model_video_level(model, test_loader, test_dataset):
                 'path': test_dataset.video_info[video_id]['path']
             })
     
-    # Print results
     print(f"\nVideo-Level Test Metrics:")
     print(f"Number of videos: {len(video_level_preds)}")
     print(f"Accuracy: {accuracy:.4f}")
@@ -163,7 +154,6 @@ def test_model_video_level(model, test_loader, test_dataset):
     print("\nClassification Report:")
     print(class_report)
     
-    # Plot confusion matrix
     plt.figure(figsize=(8, 6))
     plt.imshow(conf_matrix, interpolation='nearest', cmap=plt.cm.Blues)
     plt.title('Video-Level Confusion Matrix')
@@ -173,7 +163,6 @@ def test_model_video_level(model, test_loader, test_dataset):
     plt.xticks(tick_marks, classes)
     plt.yticks(tick_marks, classes)
     
-    # Add text annotations to confusion matrix
     thresh = conf_matrix.max() / 2.
     for i in range(conf_matrix.shape[0]):
         for j in range(conf_matrix.shape[1]):
@@ -186,7 +175,6 @@ def test_model_video_level(model, test_loader, test_dataset):
     plt.tight_layout()
     plt.savefig('video_level_confusion_matrix.png')
     
-    # Save detailed predictions and analysis
     with open('video_level_predictions.txt', 'w') as f:
         f.write("Video ID,True Label,Predicted Label,Real Frames,Fake Frames,Total Frames,Accuracy\n")
         for video_id in sorted(video_level_preds.keys()):
@@ -196,7 +184,6 @@ def test_model_video_level(model, test_loader, test_dataset):
             correct = video_level_preds[video_id] == video_level_true[video_id]
             f.write(f"{video_id},{video_level_true[video_id]},{video_level_preds[video_id]},{real_count},{fake_count},{total},{correct}\n")
     
-    # Save details of incorrectly classified videos
     if incorrect_videos:
         print(f"\nIncorrectly classified videos: {len(incorrect_videos)}")
         with open('incorrect_videos.txt', 'w') as f:
@@ -219,37 +206,28 @@ def test_model_video_level(model, test_loader, test_dataset):
     }
 
 def main():
-    # Load test data
     test_dataset = TestDataset("data/test/test_set_1", processor=processor)
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
     
-    # Initialize model with the same architecture
     model = CLIPClassifier(base_model).to(device)
     
-    # Load the fine-tuned model weights
     model.load_state_dict(torch.load("best_model.pth"))
     print("Model loaded successfully!")
     
-    # Test the model at video level
     metrics = test_model_video_level(model, test_loader, test_dataset)
     
-    # Create visualization of prediction distribution for each video
     plt.figure(figsize=(12, 8))
     
-    # Get list of videos and sort by true label then video ID for better visualization
     videos = list(metrics['video_level_true'].keys())
     videos.sort(key=lambda v: (metrics['video_level_true'][v], v))
     
     real_videos = [v for v in videos if metrics['video_level_true'][v] == 0]
     fake_videos = [v for v in videos if metrics['video_level_true'][v] == 1]
     
-    # Number of videos
     n_videos = len(videos)
     
-    # Create subplots - one for real videos, one for fake videos
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10))
     
-    # Plot for real videos
     if real_videos:
         real_data = []
         real_labels = []
@@ -269,7 +247,6 @@ def main():
         ax1.set_title('Real Videos - Frame Classification Distribution')
         ax1.axhline(y=50, color='black', linestyle='-', alpha=0.3)  # 50% line
 
-    # Plot for fake videos
     if fake_videos:
         fake_data = []
         fake_labels = []
@@ -293,12 +270,10 @@ def main():
         plt.savefig('video_classification_distribution.png')
         plt.close()
 
-    print("\nResults and visualizations saved to disk.")
-    print("- video_level_confusion_matrix.png: Confusion matrix for video-level classification")
-    print("- video_classification_distribution.png: Distribution of frame classifications for each video")
-    print("- video_level_predictions.txt: Detailed predictions for all videos")
-    if metrics['incorrect_videos']:
-        print("- incorrect_videos.txt: Details about incorrectly classified videos")
+    print("\nResults and visualizations saved.")
+    # - video_level_confusion_matrix.png: Confusion matrix for video-level classification
+    # - video_classification_distribution.png: Distribution of frame classifications for each video
+    # - video_level_predictions.txt: Detailed predictions for all videos
 
 if __name__ == "__main__":
     main()

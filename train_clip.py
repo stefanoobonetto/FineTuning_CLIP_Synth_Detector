@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm 
 
-device = "mps"  
+device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 
 print("Loading CLIP model...")
 model_name = "openai/clip-vit-base-patch32"
@@ -87,7 +88,7 @@ class CLIPClassifier(torch.nn.Module):
     def __init__(self, clip_model):
         super(CLIPClassifier, self).__init__()
         self.clip_model = clip_model
-        self.fc = torch.nn.Linear(768, 2)  # Binary classification (real/fake)
+        self.fc = torch.nn.Linear(768, 2)  # (real/fake)
     
     def forward(self, pixel_values):
         with torch.no_grad():
